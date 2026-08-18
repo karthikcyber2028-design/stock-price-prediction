@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Brain,
   Search,
@@ -16,9 +16,15 @@ import {
   Info,
   Calendar,
   LineChart,
+  Sparkles,
+  ArrowRight,
+  Cpu,
+  Shield,
+  DollarSign,
+  Clock,
+  ChevronRight,
+  Star,
 } from "lucide-react";
-import toast from "react-hot-toast";
-import { format } from "date-fns";
 import {
   ComposedChart,
   Line,
@@ -31,341 +37,1400 @@ import {
   Legend,
   ReferenceLine,
 } from "recharts";
+import toast from "react-hot-toast";
+import { format } from "date-fns";
 import {
   runPrediction,
   fetchStockInfo,
   POPULAR_STOCKS,
   type PredictionResult,
-  type StockRecord,
 } from "@/lib/engine";
 
-const PERIODS = [
-  { label: "1 Month", value: "1mo" },
-  { label: "3 Months", value: "3mo" },
-  { label: "6 Months", value: "6mo" },
-  { label: "1 Year", value: "1y" },
-  { label: "2 Years", value: "2y" },
-];
-
-interface ChartEntry {
-  date: string;
-  historicalClose: number | null;
-  predictedClose: number | null;
-  upper: number | null;
-  lower: number | null;
-  type: "historical" | "prediction";
+function fmtDateFull(s: string) {
+  return format(new Date(s), "MMM dd, yyyy");
 }
 
-function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: ChartEntry }> }) {
+function fmtDateShort(s: string) {
+  return format(new Date(s), "MM/dd");
+}
+
+function fmtCur(v: number) {
+  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
+  return `$${v.toFixed(2)}`;
+}
+
+type ChartEntry = {
+  date: string;
+  historical?: number;
+  predicted?: number;
+  upper?: number;
+  lower?: number;
+  current?: number;
+};
+
+function CustomTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
-  const entry = payload[0]?.payload;
-  if (!entry) return null;
   return (
-    <div className="glass-card rounded-lg p-3 text-xs space-y-1 min-w-[180px]">
-      <p className="font-semibold mb-1">{formatDate(entry.date)}</p>
-      {entry.type === "historical" && entry.historicalClose != null && (
-        <div className="flex justify-between"><span className="text-[var(--muted)]">Close:</span><span className="text-[var(--accent)]">${entry.historicalClose?.toFixed(2)}</span></div>
-      )}
-      {entry.type === "prediction" && entry.predictedClose != null && (
-        <>
-          <div className="flex justify-between"><span className="text-[var(--muted)]">Predicted:</span><span className="text-[var(--primary-hover)]">${entry.predictedClose?.toFixed(2)}</span></div>
-          {entry.upper != null && <div className="flex justify-between"><span className="text-[var(--muted)]">Upper:</span><span className="text-[var(--success)]">${entry.upper?.toFixed(2)}</span></div>}
-          {entry.lower != null && <div className="flex justify-between"><span className="text-[var(--muted)]">Lower:</span><span className="text-[var(--danger)]">${entry.lower?.toFixed(2)}</span></div>}
-        </>
-      )}
+    <div
+      className="glass"
+      style={{
+        padding: "12px 16px",
+        borderRadius: 12,
+        border: "1px solid var(--border)",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+        minWidth: 160,
+      }}
+    >
+      <p
+        style={{
+          color: "var(--text-muted)",
+          fontSize: 12,
+          marginBottom: 8,
+          fontFamily: "var(--font-mono)",
+        }}
+      >
+        {label}
+      </p>
+      {payload.map((p: any, i: number) => (
+        <div
+          key={i}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 16,
+            marginBottom: 4,
+            fontSize: 13,
+          }}
+        >
+          <span style={{ color: p.color, fontWeight: 500 }}>{p.name}</span>
+          <span
+            style={{
+              color: "var(--text)",
+              fontWeight: 600,
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {p.value != null ? `$${p.value.toFixed(2)}` : "—"}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
 
-function formatDate(s: string) {
-  try { return format(new Date(s), "MMM dd, yyyy"); } catch { return s; }
-}
-function fmtDate(s: string) {
-  try { return format(new Date(s), "MM/dd"); } catch { return s; }
-}
-function fmtCur(v: number) {
-  if (Math.abs(v) >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
-  return `$${v.toLocaleString()}`;
-}
-
-export default function Home() {
+export default function Page() {
   const [ticker, setTicker] = useState("");
   const [predictionDays, setPredictionDays] = useState(30);
   const [period, setPeriod] = useState("2y");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PredictionResult | null>(null);
-  const [stockInfo, setStockInfo] = useState<{ name: string; sector: string; industry: string; market_cap: number; pe_ratio: number; description: string } | null>(null);
+  const [stockInfo, setStockInfo] = useState<any>(null);
   const [progress, setProgress] = useState("");
   const [activeTab, setActiveTab] = useState<"chart" | "info">("chart");
 
-  const handlePredict = async (target: string) => {
-    if (!target.trim()) { toast.error("Enter a stock ticker"); return; }
-    const upper = target.trim().toUpperCase();
-    setTicker(upper);
+  const handlePredict = useCallback(async () => {
+    const t = ticker.trim().toUpperCase();
+    if (!t) {
+      toast.error("Please enter a stock ticker");
+      return;
+    }
     setLoading(true);
     setResult(null);
     setStockInfo(null);
-    setActiveTab("chart");
     setProgress("Initializing...");
-
     try {
       const [pred, info] = await Promise.all([
-        runPrediction(upper, predictionDays, setProgress),
-        fetchStockInfo(upper).catch(() => null),
+        runPrediction(t, predictionDays, setProgress),
+        fetchStockInfo(t),
       ]);
       setResult(pred);
-      if (info) setStockInfo(info);
-      toast.success(`${upper} prediction complete!`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Prediction failed");
+      setStockInfo(info);
+      toast.success(`Prediction complete for ${t}`);
+    } catch (err: any) {
+      toast.error(err?.message || "Prediction failed");
     } finally {
       setLoading(false);
       setProgress("");
     }
-  };
+  }, [ticker, predictionDays]);
 
-  const chartData = (): ChartEntry[] => {
+  const chartData = useMemo<ChartEntry[]>(() => {
     if (!result) return [];
-    const hist: ChartEntry[] = result.historical.map((d) => ({
-      date: d.date, historicalClose: d.close, predictedClose: null, upper: null, lower: null, type: "historical" as const,
-    }));
-    const preds: ChartEntry[] = result.predictions.map((d) => ({
-      date: d.date, historicalClose: null, predictedClose: d.predicted, upper: d.upper, lower: d.lower, type: "prediction" as const,
-    }));
-    return [...hist, ...preds];
-  };
+    const map = new Map<string, ChartEntry>();
+    for (const h of result.historical) {
+      map.set(h.date, { date: h.date, historical: h.close });
+    }
+    const lastHistorical = result.historical[result.historical.length - 1];
+    if (lastHistorical) {
+      const e = map.get(lastHistorical.date);
+      if (e) e.current = result.current_price;
+    }
+    for (const p of result.predictions) {
+      const existing = map.get(p.date) || { date: p.date };
+      existing.predicted = p.predicted;
+      existing.upper = p.upper;
+      existing.lower = p.lower;
+      map.set(p.date, existing);
+    }
+    return Array.from(map.values());
+  }, [result]);
 
-  const data = chartData();
-  const isUp = result?.prediction_direction === "UP";
-  const changePct = result ? ((result.predicted_price - result.current_price) / result.current_price) * 100 : 0;
+  const changePct = useMemo(() => {
+    if (!result) return 0;
+    return (
+      ((result.predicted_price - result.current_price) /
+        result.current_price) *
+      100
+    );
+  }, [result]);
+
+  const isUp = changePct >= 0;
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="glass-card border-b border-[var(--card-border)] sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-[var(--primary)] flex items-center justify-center glow">
-                <Brain className="w-5 h-5 text-white" />
-              </div>
-              <span className="text-xl font-bold gradient-text">StockAI</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
-              <Zap className="w-3 h-3 text-[var(--accent)]" />
-              Client-Side LSTM
-            </div>
+    <>
+      <div className="bg-mesh">
+        <div className="orb orb-1" />
+        <div className="orb orb-2" />
+        <div className="orb orb-3" />
+      </div>
+      <div className="grid-pattern" />
+
+      <header
+        className="glass fade-in"
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 50,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 32px",
+          borderRadius: 0,
+          borderLeft: "none",
+          borderRight: "none",
+          borderTop: "none",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Brain
+            className="brain-spin"
+            size={28}
+            style={{ color: "var(--primary)" }}
+          />
+          <span
+            className="gradient-text"
+            style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5 }}
+          >
+            StockAI
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              color: "var(--success)",
+              fontWeight: 500,
+            }}
+          >
+            <span className="live-dot" />
+            Live
+          </div>
+          <div
+            className="pill"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              color: "var(--text-secondary)",
+              padding: "6px 12px",
+            }}
+          >
+            <Cpu size={14} style={{ color: "var(--accent)" }} />
+            TensorFlow.js
           </div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
-        <div className="glass-card rounded-2xl p-6 mb-8 glow">
-          <div className="flex flex-col lg:flex-row gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--muted)]" />
-              <input
-                type="text"
-                placeholder="Enter stock ticker (e.g. AAPL, GOOGL, TSLA)"
-                value={ticker}
-                onChange={(e) => setTicker(e.target.value.toUpperCase())}
-                onKeyDown={(e) => e.key === "Enter" && handlePredict(ticker)}
-                className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-[var(--background)] border border-[var(--card-border)] text-[var(--foreground)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--primary)] transition-colors text-sm"
+      <main
+        style={{
+          maxWidth: 1200,
+          margin: "0 auto",
+          padding: "0 24px 80px",
+          position: "relative",
+          zIndex: 1,
+        }}
+      >
+        {!result && !loading && (
+          <section
+            className="fade-in"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              textAlign: "center",
+              paddingTop: 80,
+              paddingBottom: 40,
+            }}
+          >
+            <div
+              style={{
+                position: "relative",
+                marginBottom: 32,
+              }}
+            >
+              <div
+                style={{
+                  width: 120,
+                  height: 120,
+                  borderRadius: "50%",
+                  background:
+                    "linear-gradient(135deg, var(--primary-glow), var(--accent-glow))",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow:
+                    "0 0 60px var(--primary-glow), 0 0 120px var(--primary-glow)",
+                  animation: "pulse 3s ease-in-out infinite",
+                }}
+              >
+                <Brain
+                  size={56}
+                  style={{ color: "var(--text)" }}
+                  className="brain-spin"
+                />
+              </div>
+              <Sparkles
+                size={20}
+                style={{
+                  position: "absolute",
+                  top: -8,
+                  right: -8,
+                  color: "var(--accent)",
+                  animation: "pulse 2s ease-in-out infinite",
+                }}
+              />
+              <Sparkles
+                size={14}
+                style={{
+                  position: "absolute",
+                  bottom: 0,
+                  left: -12,
+                  color: "var(--primary-light)",
+                  animation: "pulse 2.5s ease-in-out infinite 0.5s",
+                }}
+              />
+              <Zap
+                size={16}
+                style={{
+                  position: "absolute",
+                  top: 20,
+                  left: -16,
+                  color: "var(--success)",
+                  animation: "pulse 2s ease-in-out infinite 1s",
+                }}
               />
             </div>
-            <div className="flex gap-3 items-center">
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted)]" />
-                <select
-                  value={period}
-                  onChange={(e) => setPeriod(e.target.value)}
-                  className="pl-9 pr-8 py-3.5 rounded-xl bg-[var(--background)] border border-[var(--card-border)] text-[var(--foreground)] text-sm appearance-none cursor-pointer focus:outline-none focus:border-[var(--primary)] transition-colors"
+
+            <h1
+              className="gradient-text"
+              style={{
+                fontSize: 48,
+                fontWeight: 900,
+                letterSpacing: -1.5,
+                lineHeight: 1.1,
+                marginBottom: 16,
+              }}
+            >
+              AI Stock Predictor
+            </h1>
+            <p
+              style={{
+                color: "var(--text-secondary)",
+                fontSize: 18,
+                maxWidth: 520,
+                lineHeight: 1.6,
+                marginBottom: 32,
+              }}
+            >
+              Powered by LSTM neural networks with 16 technical indicators.
+              Predictions run entirely in your browser — no data leaves your
+              device.
+            </p>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 10,
+                justifyContent: "center",
+                marginBottom: 48,
+              }}
+            >
+              {[
+                {
+                  icon: <Brain size={14} />,
+                  label: "LSTM Neural Network",
+                },
+                {
+                  icon: <BarChart3 size={14} />,
+                  label: "16 Technical Indicators",
+                },
+                {
+                  icon: <Shield size={14} />,
+                  label: "Runs in Browser",
+                },
+                {
+                  icon: <Activity size={14} />,
+                  label: "Real-time Data",
+                },
+              ].map((f) => (
+                <span
+                  key={f.label}
+                  className="pill"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 16px",
+                    fontSize: 13,
+                    color: "var(--text-secondary)",
+                  }}
                 >
-                  {PERIODS.map((p) => (<option key={p.value} value={p.value}>{p.label}</option>))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted)] pointer-events-none" />
-              </div>
-              <button
-                onClick={() => handlePredict(ticker)}
-                disabled={loading || !ticker.trim()}
-                className="px-6 py-3.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap glow"
+                  <span style={{ color: "var(--primary-light)" }}>
+                    {f.icon}
+                  </span>
+                  {f.label}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section
+          className={`glass-glow ${result || loading ? "fade-in" : "fade-in-delay-1"}`}
+          style={{
+            borderRadius: 20,
+            padding: result || loading ? "24px 28px" : "28px 32px",
+            marginBottom: result || loading ? 24 : 0,
+          }}
+        >
+          {(!result && !loading) && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 20,
+                color: "var(--text-muted)",
+                fontSize: 13,
+              }}
+            >
+              <Zap size={14} style={{ color: "var(--accent)" }} />
+              Enter a ticker to begin prediction
+            </div>
+          )}
+
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              alignItems: "stretch",
+              flexWrap: "wrap",
+            }}
+          >
+            <div
+              style={{
+                flex: "1 1 280px",
+                position: "relative",
+              }}
+            >
+              <Search
+                size={18}
+                style={{
+                  position: "absolute",
+                  left: 16,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--text-muted)",
+                  pointerEvents: "none",
+                }}
+              />
+              <input
+                type="text"
+                placeholder="Enter stock ticker (e.g. AAPL, MSFT, GOOGL)"
+                value={ticker}
+                onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                onKeyDown={(e) => e.key === "Enter" && handlePredict()}
+                style={{
+                  width: "100%",
+                  padding: "16px 16px 16px 48px",
+                  borderRadius: 14,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-primary)",
+                  color: "var(--text)",
+                  fontSize: 16,
+                  fontWeight: 500,
+                  outline: "none",
+                  transition: "border-color 0.2s, box-shadow 0.2s",
+                  fontFamily: "var(--font-mono)",
+                  letterSpacing: 1,
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = "var(--primary)";
+                  e.currentTarget.style.boxShadow =
+                    "0 0 0 3px var(--primary-glow)";
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = "var(--border)";
+                  e.currentTarget.style.boxShadow = "none";
+                }}
+              />
+            </div>
+
+            <div style={{ position: "relative", flex: "0 0 auto" }}>
+              <Calendar
+                size={14}
+                style={{
+                  position: "absolute",
+                  left: 14,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--text-muted)",
+                  pointerEvents: "none",
+                }}
+              />
+              <select
+                value={period}
+                onChange={(e) => setPeriod(e.target.value)}
+                style={{
+                  padding: "16px 40px 16px 38px",
+                  borderRadius: 14,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-primary)",
+                  color: "var(--text)",
+                  fontSize: 14,
+                  fontWeight: 500,
+                  outline: "none",
+                  cursor: "pointer",
+                  appearance: "none",
+                  fontFamily: "var(--font-sans)",
+                }}
               >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
-                {loading ? "Predicting..." : "Predict"}
-              </button>
+                <option value="1y">1 Year</option>
+                <option value="2y">2 Years</option>
+                <option value="5y">5 Years</option>
+                <option value="max">Max</option>
+              </select>
+              <ChevronDown
+                size={16}
+                style={{
+                  position: "absolute",
+                  right: 14,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--text-muted)",
+                  pointerEvents: "none",
+                }}
+              />
             </div>
+
+            <button
+              className="btn-glow"
+              onClick={handlePredict}
+              disabled={loading || !ticker.trim()}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "16px 32px",
+                borderRadius: 14,
+                fontSize: 15,
+                fontWeight: 700,
+                border: "none",
+                cursor: loading || !ticker.trim() ? "not-allowed" : "pointer",
+                opacity: loading || !ticker.trim() ? 0.6 : 1,
+                flex: "0 0 auto",
+                letterSpacing: 0.3,
+              }}
+            >
+              {loading ? (
+                <Loader2 size={18} className="brain-spin" />
+              ) : (
+                <Brain size={18} />
+              )}
+              {loading ? "Predicting..." : "Predict"}
+            </button>
           </div>
-          <div className="mt-5 flex flex-col sm:flex-row sm:items-center gap-4">
-            <label className="text-sm text-[var(--muted)] whitespace-nowrap flex items-center gap-1.5">
-              <LineChart className="w-4 h-4" /> Prediction Horizon:
-            </label>
-            <div className="flex-1 flex items-center gap-3">
-              <span className="text-xs text-[var(--muted)]">7d</span>
-              <input type="range" min={7} max={90} value={predictionDays} onChange={(e) => setPredictionDays(Number(e.target.value))} className="flex-1 h-1.5 rounded-full appearance-none bg-[var(--card-border)] cursor-pointer accent-[var(--primary)]" />
-              <span className="text-xs text-[var(--muted)]">90d</span>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginTop: 16,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                color: "var(--text-muted)",
+                flexShrink: 0,
+              }}
+            >
+              <Clock size={13} />
+              <span>Days: {predictionDays}</span>
             </div>
-            <span className="text-sm font-semibold text-[var(--accent)]">{predictionDays} days</span>
+            <input
+              type="range"
+              min={7}
+              max={90}
+              value={predictionDays}
+              onChange={(e) => setPredictionDays(Number(e.target.value))}
+              style={{
+                flex: 1,
+                maxWidth: 240,
+                accentColor: "var(--primary)",
+                height: 6,
+              }}
+            />
           </div>
-          <div className="mt-5">
-            <p className="text-xs text-[var(--muted)] mb-2.5 uppercase tracking-wider">Quick Select</p>
-            <div className="flex flex-wrap gap-2">
-              {POPULAR_STOCKS.map((s) => (
-                <button key={s.ticker} onClick={() => { setTicker(s.ticker); handlePredict(s.ticker); }} disabled={loading} className="px-3 py-1.5 rounded-lg bg-[var(--background)] border border-[var(--card-border)] text-xs font-medium hover:border-[var(--primary)] hover:text-[var(--primary-hover)] transition-all disabled:opacity-40">
+
+          {!result && !loading && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  marginRight: 4,
+                }}
+              >
+                Quick select:
+              </span>
+              {POPULAR_STOCKS.slice(0, 8).map((s) => (
+                <button
+                  key={s.ticker}
+                  className="pill"
+                  onClick={() => setTicker(s.ticker)}
+                  style={{
+                    padding: "6px 14px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    border: "none",
+                    cursor: "pointer",
+                    color:
+                      ticker === s.ticker
+                        ? "var(--text)"
+                        : "var(--text-secondary)",
+                    background:
+                      ticker === s.ticker
+                        ? "var(--primary-glow)"
+                        : "transparent",
+                    transition: "all 0.2s",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
                   {s.ticker}
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 400,
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {s.name}
+                  </span>
                 </button>
               ))}
             </div>
-          </div>
-        </div>
+          )}
+        </section>
 
         {loading && (
-          <div className="glass-card rounded-2xl p-8 mb-8 text-center">
-            <Loader2 className="w-10 h-10 text-[var(--primary)] animate-spin mx-auto mb-4" />
-            <p className="text-sm text-[var(--muted)]">{progress}</p>
-            <p className="text-xs text-[var(--muted)] mt-2 opacity-60">This may take 30-90 seconds in the browser</p>
-          </div>
+          <section
+            className="glass fade-in"
+            style={{
+              borderRadius: 20,
+              padding: "80px 40px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ position: "relative", marginBottom: 32 }}>
+              <div
+                style={{
+                  width: 80,
+                  height: 80,
+                  borderRadius: "50%",
+                  border: "3px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                }}
+              >
+                <Brain
+                  size={36}
+                  className="brain-spin"
+                  style={{ color: "var(--primary)" }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: -8,
+                    borderRadius: "50%",
+                    border: "2px solid var(--primary-glow)",
+                    opacity: 0.4,
+                    animation: "pulse 2s ease-in-out infinite",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: -18,
+                    borderRadius: "50%",
+                    border: "1px solid var(--primary-glow)",
+                    opacity: 0.2,
+                    animation: "pulse 2s ease-in-out infinite 0.5s",
+                  }}
+                />
+              </div>
+            </div>
+            <h3
+              style={{
+                color: "var(--text)",
+                fontSize: 20,
+                fontWeight: 700,
+                marginBottom: 8,
+              }}
+            >
+              Analyzing {ticker.toUpperCase()}...
+            </h3>
+            <p
+              style={{
+                color: "var(--text-secondary)",
+                fontSize: 14,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {progress || "Loading model..."}
+            </p>
+            <div
+              style={{
+                marginTop: 24,
+                display: "flex",
+                gap: 24,
+                color: "var(--text-muted)",
+                fontSize: 12,
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Loader2 size={12} className="brain-spin" /> Fetching data
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Activity size={12} /> Computing indicators
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Brain size={12} className="brain-spin" /> Training LSTM
+              </span>
+            </div>
+          </section>
         )}
 
         {result && !loading && (
           <>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <div className="glass-card rounded-xl p-5">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-1">Current Price</p>
-                <p className="text-2xl font-bold">${result.current_price.toFixed(2)}</p>
-              </div>
-              <div className="glass-card rounded-xl p-5">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-1">Predicted Price</p>
-                <p className={`text-2xl font-bold ${isUp ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>${result.predicted_price.toFixed(2)}</p>
-              </div>
-              <div className="glass-card rounded-xl p-5">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-1">Change</p>
-                <div className="flex items-center gap-2">
-                  {isUp ? <TrendingUp className="w-5 h-5 text-[var(--success)]" /> : <TrendingDown className="w-5 h-5 text-[var(--danger)]" />}
-                  <p className={`text-2xl font-bold ${isUp ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>{changePct > 0 ? "+" : ""}{changePct.toFixed(2)}%</p>
-                </div>
-              </div>
-              <div className="glass-card rounded-xl p-5">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-1">Direction</p>
-                <p className={`text-2xl font-bold ${isUp ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>{result.prediction_direction}</p>
-                <p className="text-xs text-[var(--muted)] mt-0.5">Next {result.days} days</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-4 mb-8">
-              <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-                <div className="w-10 h-10 rounded-lg bg-[var(--primary)]/10 flex items-center justify-center"><Target className="w-5 h-5 text-[var(--primary-hover)]" /></div>
-                <div><p className="text-xs text-[var(--muted)]">MAE</p><p className="text-lg font-bold">${result.metrics.mae.toFixed(4)}</p></div>
-              </div>
-              <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-                <div className="w-10 h-10 rounded-lg bg-[var(--accent)]/10 flex items-center justify-center"><BarChart3 className="w-5 h-5 text-[var(--accent)]" /></div>
-                <div><p className="text-xs text-[var(--muted)]">RMSE</p><p className="text-lg font-bold">${result.metrics.rmse.toFixed(4)}</p></div>
-              </div>
-              <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-                <div className="w-10 h-10 rounded-lg bg-[var(--success)]/10 flex items-center justify-center"><Activity className="w-5 h-5 text-[var(--success)]" /></div>
-                <div><p className="text-xs text-[var(--muted)]">MAPE</p><p className="text-lg font-bold">{result.metrics.mape.toFixed(2)}%</p></div>
-              </div>
-            </div>
-
-            <div className="flex gap-1 mb-4 bg-[var(--card)] rounded-lg p-1 w-fit">
-              <button onClick={() => setActiveTab("chart")} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === "chart" ? "bg-[var(--primary)] text-white" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}>
-                <span className="flex items-center gap-1.5"><LineChart className="w-4 h-4" /> Chart</span>
-              </button>
-              {stockInfo && (
-                <button onClick={() => setActiveTab("info")} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === "info" ? "bg-[var(--primary)] text-white" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}>
-                  <span className="flex items-center gap-1.5"><Info className="w-4 h-4" /> Company Info</span>
-                </button>
-              )}
-            </div>
-
-            {activeTab === "chart" && (
-              <div className="glass-card rounded-2xl p-6 mb-8">
-                <h3 className="text-sm font-semibold text-[var(--muted)] mb-4">{result.ticker} — Historical & Predicted Prices</h3>
-                <div className="w-full h-[400px]">
-                  <ResponsiveContainer>
-                    <ComposedChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                      <defs>
-                        <linearGradient id="hGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
-                          <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
-                        </linearGradient>
-                        <linearGradient id="pGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={isUp ? "#22c55e" : "#ef4444"} stopOpacity={0.25} />
-                          <stop offset="100%" stopColor={isUp ? "#22c55e" : "#ef4444"} stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(30,30,46,0.8)" />
-                      <XAxis dataKey="date" tickFormatter={fmtDate} stroke="#71717a" fontSize={11} tickLine={false} interval="preserveStartEnd" minTickGap={50} />
-                      <YAxis stroke="#71717a" fontSize={11} tickLine={false} domain={["auto", "auto"]} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend wrapperStyle={{ fontSize: 12 }} formatter={(v: string) => <span style={{ color: "#a1a1aa" }}>{v}</span>} />
-                      {result.current_price > 0 && <ReferenceLine y={result.current_price} stroke="#71717a" strokeDasharray="5 5" label={{ value: "Current", fill: "#71717a", fontSize: 10 }} />}
-                      <Area type="monotone" dataKey="historicalClose" fill="url(#hGrad)" stroke="none" name="Historical Fill" legendType="none" connectNulls />
-                      <Line type="monotone" dataKey="historicalClose" stroke="#6366f1" strokeWidth={2} dot={false} name="Historical Close" connectNulls />
-                      <Area type="monotone" dataKey="predictedClose" fill="url(#pGrad)" stroke="none" name="Prediction Fill" legendType="none" connectNulls />
-                      <Line type="monotone" dataKey="predictedClose" stroke={isUp ? "#22c55e" : "#ef4444"} strokeWidth={2.5} strokeDasharray="6 3" dot={false} name="Predicted Close" connectNulls />
-                      {data.some((d) => d.upper != null) && <Line type="monotone" dataKey="upper" stroke={isUp ? "#22c55e" : "#ef4444"} strokeWidth={1} strokeDasharray="3 3" strokeOpacity={0.4} dot={false} name="Upper Bound" connectNulls />}
-                      {data.some((d) => d.lower != null) && <Line type="monotone" dataKey="lower" stroke={isUp ? "#22c55e" : "#ef4444"} strokeWidth={1} strokeDasharray="3 3" strokeOpacity={0.4} dot={false} name="Lower Bound" connectNulls />}
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "info" && stockInfo && (
-              <div className="glass-card rounded-2xl p-6 mb-8">
-                <h3 className="text-sm font-semibold text-[var(--muted)] mb-4">{result.ticker} — Company Information</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider">Name</p><p className="text-lg font-semibold">{stockInfo.name}</p></div>
-                    <div className="flex gap-6">
-                      <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider">Sector</p><p className="text-sm font-medium">{stockInfo.sector}</p></div>
-                      <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider">Industry</p><p className="text-sm font-medium">{stockInfo.industry}</p></div>
-                    </div>
-                    <div className="flex gap-6">
-                      <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider">Market Cap</p><p className="text-sm font-medium">{fmtCur(stockInfo.market_cap)}</p></div>
-                      <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider">P/E Ratio</p><p className="text-sm font-medium">{stockInfo.pe_ratio ? stockInfo.pe_ratio.toFixed(2) : "N/A"}</p></div>
+            <section
+              className="fade-in"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              {[
+                {
+                  icon: <DollarSign size={20} />,
+                  label: "Current Price",
+                  value: `$${result.current_price.toFixed(2)}`,
+                  color: "var(--text)",
+                  ringColor: "var(--primary)",
+                },
+                {
+                  icon: <Target size={20} />,
+                  label: "Predicted Price",
+                  value: `$${result.predicted_price.toFixed(2)}`,
+                  color: "var(--primary-light)",
+                  ringColor: "var(--accent)",
+                  isGradient: true,
+                },
+                {
+                  icon: isUp ? <TrendingUp size={20} /> : <TrendingDown size={20} />,
+                  label: "Expected Change",
+                  value: `${isUp ? "+" : ""}${changePct.toFixed(2)}%`,
+                  color: isUp ? "var(--success)" : "var(--danger)",
+                  ringColor: isUp ? "var(--success)" : "var(--danger)",
+                },
+                {
+                  icon: isUp ? <ArrowRight size={20} /> : <TrendingDown size={20} />,
+                  label: "Direction",
+                  value: result.prediction_direction,
+                  color: isUp ? "var(--success)" : "var(--danger)",
+                  ringColor: isUp ? "var(--success)" : "var(--danger)",
+                },
+              ].map((card, i) => (
+                <div
+                  key={card.label}
+                  className={`stat-card glass fade-in-delay-${Math.min(i + 1, 4)}`}
+                  style={{
+                    borderRadius: 16,
+                    padding: "22px 24px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        fontWeight: 500,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.8,
+                      }}
+                    >
+                      {card.label}
+                    </span>
+                    <div className="metric-ring" style={{ borderColor: card.ringColor }}>
+                      <span style={{ color: card.ringColor }}>{card.icon}</span>
                     </div>
                   </div>
-                  <div><p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-2">Description</p><p className="text-sm text-[var(--muted)] leading-relaxed max-h-40 overflow-y-auto">{stockInfo.description}</p></div>
+                  <span
+                    className={card.isGradient ? "gradient-text" : ""}
+                    style={{
+                      fontSize: 28,
+                      fontWeight: 800,
+                      color: card.isGradient ? undefined : card.color,
+                      fontFamily: "var(--font-mono)",
+                      letterSpacing: -0.5,
+                    }}
+                  >
+                    {card.value}
+                  </span>
                 </div>
-              </div>
-            )}
+              ))}
+            </section>
 
-            <div className="glass-card rounded-xl p-4 mb-8 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-[var(--muted)] shrink-0 mt-0.5" />
-              <div className="text-xs text-[var(--muted)] leading-relaxed">
-                <strong>Disclaimer:</strong> Predictions are generated by an LSTM neural network running entirely in your browser. For informational purposes only — not financial advice.
+            <section
+              className="fade-in fade-in-delay-2"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 16,
+                marginBottom: 24,
+              }}
+            >
+              {[
+                {
+                  icon: <Target size={18} />,
+                  label: "MAE",
+                  value: result.metrics.mae.toFixed(4),
+                  color: "var(--primary-light)",
+                },
+                {
+                  icon: <Activity size={18} />,
+                  label: "RMSE",
+                  value: result.metrics.rmse.toFixed(4),
+                  color: "var(--accent-light)",
+                },
+                {
+                  icon: <BarChart3 size={18} />,
+                  label: "MAPE",
+                  value: `${result.metrics.mape.toFixed(2)}%`,
+                  color: "var(--success)",
+                },
+              ].map((m) => (
+                <div
+                  key={m.label}
+                  className="glass stat-card"
+                  style={{
+                    borderRadius: 14,
+                    padding: "18px 20px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 14,
+                  }}
+                >
+                  <div className="metric-ring" style={{ borderColor: m.color }}>
+                    <span style={{ color: m.color }}>{m.icon}</span>
+                  </div>
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--text-muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: 0.8,
+                        fontWeight: 500,
+                        marginBottom: 2,
+                      }}
+                    >
+                      {m.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 700,
+                        color: "var(--text)",
+                        fontFamily: "var(--font-mono)",
+                      }}
+                    >
+                      {m.value}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </section>
+
+            <section className="fade-in fade-in-delay-3" style={{ marginBottom: 24 }}>
+              <div
+                className="glass"
+                style={{
+                  display: "flex",
+                  borderRadius: 14,
+                  padding: 4,
+                  gap: 4,
+                  width: "fit-content",
+                  marginBottom: 16,
+                }}
+              >
+                {(
+                  [
+                    { key: "chart" as const, label: "Chart", icon: <LineChart size={15} /> },
+                    { key: "info" as const, label: "Company Info", icon: <Info size={15} /> },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "10px 20px",
+                      borderRadius: 10,
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      transition: "all 0.2s",
+                      background:
+                        activeTab === tab.key
+                          ? "var(--primary)"
+                          : "transparent",
+                      color:
+                        activeTab === tab.key
+                          ? "var(--text)"
+                          : "var(--text-muted)",
+                    }}
+                  >
+                    {tab.icon}
+                    {tab.label}
+                  </button>
+                ))}
               </div>
+
+              {activeTab === "chart" && (
+                <div
+                  className="glass"
+                  style={{ borderRadius: 20, padding: "28px 24px 20px" }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 20,
+                      flexWrap: "wrap",
+                      gap: 12,
+                    }}
+                  >
+                    <div>
+                      <h3
+                        style={{
+                          fontSize: 18,
+                          fontWeight: 700,
+                          color: "var(--text)",
+                          marginBottom: 4,
+                        }}
+                      >
+                        Price History & Prediction
+                      </h3>
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {result.historical.length} days historical •{" "}
+                        {result.predictions.length} days predicted
+                      </p>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 20,
+                            height: 3,
+                            borderRadius: 2,
+                            background: "var(--primary)",
+                            display: "inline-block",
+                          }}
+                        />
+                        Historical
+                      </span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 20,
+                            height: 3,
+                            borderRadius: 2,
+                            background: isUp
+                              ? "var(--success)"
+                              : "var(--danger)",
+                            display: "inline-block",
+                          }}
+                        />
+                        Predicted
+                      </span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 20,
+                            height: 1,
+                            borderTop: "2px dashed var(--text-muted)",
+                            display: "inline-block",
+                          }}
+                        />
+                        Bounds
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ width: "100%", height: 420 }}>
+                    <ResponsiveContainer>
+                      <ComposedChart
+                        data={chartData}
+                        margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient
+                            id="gradHistorical"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor="var(--primary)"
+                              stopOpacity={0.3}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor="var(--primary)"
+                              stopOpacity={0}
+                            />
+                          </linearGradient>
+                          <linearGradient
+                            id="gradPrediction"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor={
+                                isUp ? "var(--success)" : "var(--danger)"
+                              }
+                              stopOpacity={0.25}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={
+                                isUp ? "var(--success)" : "var(--danger)"
+                              }
+                              stopOpacity={0}
+                            />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke="var(--border)"
+                          vertical={false}
+                        />
+                        <XAxis
+                          dataKey="date"
+                          tickFormatter={fmtDateShort}
+                          stroke="var(--text-muted)"
+                          tick={{ fontSize: 11, fontFamily: "var(--font-mono)" }}
+                          tickLine={false}
+                          axisLine={false}
+                          interval="preserveStartEnd"
+                        />
+                        <YAxis
+                          stroke="var(--text-muted)"
+                          tick={{ fontSize: 11, fontFamily: "var(--font-mono)" }}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(v) => `$${v}`}
+                          domain={["auto", "auto"]}
+                        />
+                        <Tooltip content={<CustomTooltip />} />
+                        <ReferenceLine
+                          y={result.current_price}
+                          stroke="var(--text-muted)"
+                          strokeDasharray="6 4"
+                          strokeWidth={1}
+                          label={{
+                            value: "Current",
+                            position: "right",
+                            fill: "var(--text-muted)",
+                            fontSize: 11,
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="historical"
+                          fill="url(#gradHistorical)"
+                          stroke="none"
+                          name="Historical"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="upper"
+                          fill="none"
+                          stroke="transparent"
+                          name="Upper Bound"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="lower"
+                          fill="url(#gradPrediction)"
+                          stroke="none"
+                          name="Lower Bound"
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="historical"
+                          stroke="var(--primary)"
+                          strokeWidth={2.5}
+                          dot={false}
+                          name="Historical"
+                          connectNulls={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="upper"
+                          stroke={
+                            isUp ? "var(--success)" : "var(--danger)"
+                          }
+                          strokeWidth={1}
+                          strokeDasharray="4 4"
+                          dot={false}
+                          name="Upper Bound"
+                          opacity={0.4}
+                          connectNulls={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="lower"
+                          stroke={
+                            isUp ? "var(--success)" : "var(--danger)"
+                          }
+                          strokeWidth={1}
+                          strokeDasharray="4 4"
+                          dot={false}
+                          name="Lower Bound"
+                          opacity={0.4}
+                          connectNulls={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="predicted"
+                          stroke={
+                            isUp ? "var(--success)" : "var(--danger)"
+                          }
+                          strokeWidth={2.5}
+                          dot={false}
+                          name="Predicted"
+                          connectNulls={false}
+                        />
+                        <Legend
+                          wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "info" && stockInfo && (
+                <div
+                  className="glass"
+                  style={{ borderRadius: 20, padding: 32 }}
+                >
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(auto-fit, minmax(200px, 1fr))",
+                      gap: 24,
+                    }}
+                  >
+                    {[
+                      {
+                        label: "Company",
+                        value: stockInfo.name || "—",
+                        icon: <Info size={16} />,
+                      },
+                      {
+                        label: "Sector",
+                        value: stockInfo.sector || "—",
+                        icon: <BarChart3 size={16} />,
+                      },
+                      {
+                        label: "Industry",
+                        value: stockInfo.industry || "—",
+                        icon: <Activity size={16} />,
+                      },
+                      {
+                        label: "Market Cap",
+                        value: stockInfo.marketCap
+                          ? fmtCur(stockInfo.marketCap)
+                          : "—",
+                        icon: <DollarSign size={16} />,
+                      },
+                      {
+                        label: "P/E Ratio",
+                        value: stockInfo.pe
+                          ? stockInfo.pe.toFixed(2)
+                          : "—",
+                        icon: <TrendingUp size={16} />,
+                      },
+                    ].map((item) => (
+                      <div key={item.label}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            textTransform: "uppercase",
+                            letterSpacing: 0.8,
+                            fontWeight: 500,
+                            marginBottom: 6,
+                          }}
+                        >
+                          <span style={{ color: "var(--primary-light)" }}>
+                            {item.icon}
+                          </span>
+                          {item.label}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 16,
+                            fontWeight: 600,
+                            color: "var(--text)",
+                          }}
+                        >
+                          {item.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {stockInfo.description && (
+                    <div style={{ marginTop: 28 }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.8,
+                          fontWeight: 500,
+                          marginBottom: 8,
+                        }}
+                      >
+                        Description
+                      </div>
+                      <p
+                        style={{
+                          fontSize: 14,
+                          color: "var(--text-secondary)",
+                          lineHeight: 1.7,
+                          maxHeight: 160,
+                          overflow: "auto",
+                        }}
+                      >
+                        {stockInfo.description}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === "info" && !stockInfo && (
+                <div
+                  className="glass"
+                  style={{
+                    borderRadius: 20,
+                    padding: "48px 32px",
+                    textAlign: "center",
+                  }}
+                >
+                  <Info
+                    size={32}
+                    style={{ color: "var(--text-muted)", marginBottom: 12 }}
+                  />
+                  <p style={{ color: "var(--text-muted)", fontSize: 14 }}>
+                    Company info unavailable for this ticker.
+                  </p>
+                </div>
+              )}
+            </section>
+
+            <div
+              className="glass fade-in fade-in-delay-4"
+              style={{
+                borderRadius: 14,
+                padding: "16px 20px",
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                fontSize: 12,
+                color: "var(--text-muted)",
+                lineHeight: 1.6,
+                borderLeft: "3px solid var(--accent)",
+              }}
+            >
+              <AlertCircle
+                size={16}
+                style={{
+                  color: "var(--accent)",
+                  flexShrink: 0,
+                  marginTop: 1,
+                }}
+              />
+              <span>
+                <strong style={{ color: "var(--text-secondary)" }}>
+                  Disclaimer:
+                </strong>{" "}
+                This prediction is generated by an LSTM neural network model
+                running entirely in your browser. It is for educational and
+                research purposes only. Do not use these predictions as the sole
+                basis for investment decisions. Past performance does not
+                guarantee future results.
+              </span>
             </div>
           </>
         )}
-
-        {!result && !loading && (
-          <div className="glass-card rounded-2xl p-12 text-center">
-            <Brain className="w-16 h-16 text-[var(--primary)] mx-auto mb-4 opacity-50" />
-            <h2 className="text-xl font-semibold mb-2">AI-Powered Stock Predictions</h2>
-            <p className="text-sm text-[var(--muted)] max-w-md mx-auto">
-              Enter a stock ticker above or select a popular stock. An LSTM neural network will train in your browser and predict future prices.
-            </p>
-            <div className="flex flex-wrap justify-center gap-3 mt-6">
-              {POPULAR_STOCKS.slice(0, 6).map((s) => (
-                <button key={s.ticker} onClick={() => { setTicker(s.ticker); handlePredict(s.ticker); }} className="px-4 py-2 rounded-xl bg-[var(--background)] border border-[var(--card-border)] text-sm hover:border-[var(--primary)] hover:text-[var(--primary-hover)] transition-all">
-                  <span className="font-semibold">{s.ticker}</span>
-                  <span className="text-[var(--muted)] ml-1.5 text-xs">{s.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </main>
 
-      <footer className="border-t border-[var(--card-border)] py-6 mt-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm text-[var(--muted)]"><Brain className="w-4 h-4" /><span>StockAI &copy; {new Date().getFullYear()}</span></div>
-          <p className="text-xs text-[var(--muted)]">LSTM runs 100% in your browser &middot; Not financial advice</p>
+      <footer
+        style={{
+          position: "relative",
+          zIndex: 1,
+          textAlign: "center",
+          padding: "32px 24px 40px",
+          borderTop: "1px solid var(--border)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            marginBottom: 8,
+          }}
+        >
+          <Brain size={16} style={{ color: "var(--primary)" }} />
+          <span
+            style={{
+              fontSize: 13,
+              color: "var(--text-muted)",
+              fontWeight: 500,
+            }}
+          >
+            StockAI &copy; {new Date().getFullYear()}
+          </span>
+        </div>
+        <div
+          className="pill"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 12px",
+            fontSize: 11,
+            color: "var(--text-muted)",
+          }}
+        >
+          <Shield size={11} />
+          100% Client-Side
         </div>
       </footer>
-    </div>
+    </>
   );
 }
